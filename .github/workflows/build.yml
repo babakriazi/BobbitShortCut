@@ -25,7 +25,7 @@ jobs:
           gradle wrapper --gradle-version 8.9 || true
           chmod +x gradlew || true
 
-      - name: Generate signing keystore for shortcut APKs
+      - name: Generate signing keystore
         run: |
           keytool -genkeypair -v \
             -keystore shortcut.p12 \
@@ -38,12 +38,21 @@ jobs:
           mkdir -p app/src/main/assets
           cp shortcut.p12 app/src/main/assets/shortcut.p12
 
-      - name: Build template APK
+      - name: Build all slot template APKs
         run: |
-          if [ -f gradlew ]; then ./gradlew :template:assembleDebug; else gradle :template:assembleDebug; fi
-          mkdir -p app/src/main/assets
-          cp template/build/outputs/apk/debug/template-debug.apk app/src/main/assets/template.apk
-          ls -la app/src/main/assets/
+          if [ -f gradlew ]; then GW=./gradlew; else GW=gradle; fi
+          $GW :template:assembleDebug
+          mkdir -p app/src/main/assets/templates
+          for i in $(seq -w 0 19); do
+            # Gradle flavor output: template-s00-debug.apk etc.
+            SRC="template/build/outputs/apk/s${i}/debug/template-s${i}-debug.apk"
+            if [ ! -f "$SRC" ]; then
+              SRC=$(find template/build/outputs/apk -name "*s${i}*debug*.apk" | head -1)
+            fi
+            echo "Slot $i <- $SRC"
+            cp "$SRC" "app/src/main/assets/templates/t${i}.apk"
+          done
+          ls -la app/src/main/assets/templates/
 
       - name: Build manager APK
         run: |

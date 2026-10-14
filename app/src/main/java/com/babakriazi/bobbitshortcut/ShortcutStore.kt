@@ -16,6 +16,7 @@ data class SiteShortcut(
 
 class ShortcutStore(context: Context) {
     private val prefs = context.getSharedPreferences("shortcuts", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
 
     fun getAll(): MutableList<SiteShortcut> {
         val json = prefs.getString("list", "[]") ?: "[]"
@@ -30,7 +31,7 @@ class ShortcutStore(context: Context) {
                     url = o.optString("url"),
                     slot = o.optInt("slot"),
                     packageName = o.optString("packageName"),
-                    iconPath = o.optString("iconPath", null)
+                    iconPath = o.optString("iconPath", null).takeIf { !it.isNullOrBlank() }
                 )
             )
         }
@@ -62,12 +63,25 @@ class ShortcutStore(context: Context) {
         saveAll(getAll().filter { it.id != id })
     }
 
+    /** Prefer slots not used in our list and not already installed on device. */
     fun nextFreeSlot(): Int {
-        val used = getAll().map { it.slot }.toSet()
-        for (i in 0 until 100) {
-            if (i !in used) return i
+        val usedInList = getAll().map { it.slot }.toSet()
+        val pm = appContext.packageManager
+        for (i in 0 until ApkBuilder.MAX_SLOTS) {
+            if (i in usedInList) continue
+            val pkg = packageForSlot(i)
+            try {
+                pm.getPackageInfo(pkg, 0)
+                // installed — skip
+            } catch (_: Exception) {
+                return i
+            }
         }
-        return 0
+        // fallback: first not in list
+        for (i in 0 until ApkBuilder.MAX_SLOTS) {
+            if (i !in usedInList) return i
+        }
+        throw IllegalStateException("All ${ApkBuilder.MAX_SLOTS} shortcut slots are in use. Delete one first.")
     }
 
     companion object {

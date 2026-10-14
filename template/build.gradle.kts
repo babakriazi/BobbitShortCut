@@ -4,24 +4,30 @@ plugins {
 }
 
 android {
-    namespace = "com.babakriazi.bsc.t00"
+    namespace = "com.babakriazi.bsc.template"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.babakriazi.bsc.t00"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
     }
 
+    flavorDimensions += "slot"
+    productFlavors {
+        for (i in 0..19) {
+            val id = i.toString().padStart(2, '0')
+            create("s$id") {
+                dimension = "slot"
+                applicationId = "com.babakriazi.bsc.t$id"
+            }
+        }
+    }
+
     buildTypes {
-        release {
-            isMinifyEnabled = false
-        }
-        debug {
-            isMinifyEnabled = false
-        }
+        debug { isMinifyEnabled = false }
+        release { isMinifyEnabled = false }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
