@@ -23,7 +23,7 @@ object ApkBuilder {
 
     // Must match template strings.xml app_name exactly (64 ASCII chars)
     private const val LABEL_PLACEHOLDER =
-        "____BOBBIT_SHORTCUT_LABEL_PLACEHOLDER_64_BYTES_PAD____"
+        "BOBBIT_SHORTCUT_LABEL_UTF8_PAD__________________________________"
 
     const val MAX_SLOTS = 20
 
@@ -167,12 +167,11 @@ object ApkBuilder {
         var bytes = clean.toByteArray(Charsets.UTF_8)
         if (bytes.size > max) {
             var cut = max
-            // do not split a UTF-8 multi-byte sequence
-            while (cut > 0 && (bytes[cut].toInt() and 0xC0) == 0x80) cut--
-            bytes = bytes.copyOf(cut)
+            while (cut > 0 && cut < bytes.size && (bytes[cut].toInt() and 0xC0) == 0x80) cut--
+            bytes = bytes.copyOf(cut.coerceAtLeast(0))
         }
         val out = ByteArray(max) { 0x20 }
-        System.arraycopy(bytes, 0, out, 0, bytes.size)
+        System.arraycopy(bytes, 0, out, 0, bytes.size.coerceAtMost(max))
         return out
     }
 
