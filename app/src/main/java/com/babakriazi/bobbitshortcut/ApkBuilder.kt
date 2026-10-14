@@ -7,21 +7,21 @@ import java.io.FileOutputStream
 import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
+import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 /**
- * Builds a signed mini-APK from the embedded template:
- * - unique package com.babakriazi.bsc.tXX
- * - label (same byte length as placeholder)
- * - url in assets/url.txt
- * - launcher icon PNGs replaced when possible
+ * Builds a signed mini-APK from the embedded template.
+ * Critical for install success:
+ *  - strip original META-INF (old signatures)
+ *  - keep resources.arsc uncompressed (STORED)
+ *  - re-sign with our keystore
  */
 object ApkBuilder {
 
     private const val BASE_PKG = "com.babakriazi.bsc.t00"
-    // Must match template strings.xml app_name exactly (length matters for binary replace)
     private const val LABEL_PLACEHOLDER = "__BOBBIT_LABEL_PAD_32CHARS__"
 
     fun build(
@@ -44,6 +44,7 @@ object ApkBuilder {
         val unsigned = File(workDir, "unsigned.apk")
         val signed = File(context.cacheDir, "apks/shortcut_$slotStr.apk").also {
             it.parentFile?.mkdirs()
+            if (it.exists()) it.delete()
         }
 
         val templateBytes = try {
@@ -52,19 +53,35 @@ object ApkBuilder {
             throw IllegalStateException("template.apk missing in assets", e)
         }
 
-        val entries = linkedMapOf<String, ByteArray>()
+        // name -> (bytes, method) method: ZipEntry.STORED or DEFLATED
+        data class Entry(val data: ByteArray, val method: Int)
+
+        val entries = linkedMapOf<String, Entry>()
         ZipInputStream(templateBytes.inputStream()).use { zis ->
             var e = zis.nextEntry
             while (e != null) {
-                if (!e.isDirectory) {
-                    entries[e.name] = zis.readBytes()
+                val name = e.name
+                if (!e.isDirectory && !name.uppercase().startsWith("META-INF/")) {
+                    val data = zis.readBytes()
+                    // Preserve STORED for arsc and similar; default DEFLATED otherwise
+                    val method = when {
+                        name == "resources.arsc" -> ZipEntry.STORED
+                        name.endsWith(".png") || name.endsWith(".webp") -> ZipEntry.STORED
+                        e.method == ZipEntry.STORED -> ZipEntry.STORED
+                        else -> ZipEntry.DEFLATED
+                    }
+                    entries[name] = Entry(data, method)
                 }
                 zis.closeEntry()
                 e = zis.nextEntry
             }
         }
 
-        entries["assets/url.txt"] = (normalizeUrl(url) + "\n").toByteArray(Charsets.UTF_8)
+        // URL asset
+        entries["assets/url.txt"] = Entry(
+            (normalizeUrl(url) + "\n").toByteArray(Charsets.UTF_8),
+            ZipEntry.DEFLATED
+        )
 
         val pkgFrom = BASE_PKG.toByteArray(Charsets.UTF_8)
         val pkgTo = newPkg.toByteArray(Charsets.UTF_8)
@@ -76,33 +93,43 @@ object ApkBuilder {
             )
         }
 
-        for ((name, data) in entries.toList()) {
-            var bytes = data
+        for ((name, entry) in entries.toList()) {
+            var bytes = entry.data
             bytes = replaceBytes(bytes, pkgFrom, pkgTo)
             bytes = replaceBytes(bytes, labelFrom, labelTo)
-            entries[name] = bytes
+            entries[name] = Entry(bytes, entry.method)
         }
 
+        // Inject favicon as mipmap PNGs (STORED)
         if (iconPng != null && iconPng.exists()) {
             val png = iconPng.readBytes()
             val iconKeys = entries.keys.filter {
                 it.endsWith("ic_launcher.png") || it.endsWith("ic_launcher.webp")
             }
             if (iconKeys.isNotEmpty()) {
-                iconKeys.forEach { entries[it] = png }
+                iconKeys.forEach { entries[it] = Entry(png, ZipEntry.STORED) }
             } else {
-                entries["res/drawable/ic_launcher_foreground.png"] = png
                 listOf("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi").forEach { dens ->
-                    entries["res/mipmap-$dens/ic_launcher.png"] = png
+                    entries["res/mipmap-$dens/ic_launcher.png"] = Entry(png, ZipEntry.STORED)
                 }
             }
         }
 
         ZipOutputStream(FileOutputStream(unsigned)).use { zos ->
-            for ((name, data) in entries) {
-                val entry = ZipEntry(name)
-                zos.putNextEntry(entry)
-                zos.write(data)
+            for ((name, entry) in entries) {
+                val zipEntry = ZipEntry(name)
+                if (entry.method == ZipEntry.STORED) {
+                    zipEntry.method = ZipEntry.STORED
+                    zipEntry.size = entry.data.size.toLong()
+                    zipEntry.compressedSize = entry.data.size.toLong()
+                    val crc = CRC32()
+                    crc.update(entry.data)
+                    zipEntry.crc = crc.value
+                } else {
+                    zipEntry.method = ZipEntry.DEFLATED
+                }
+                zos.putNextEntry(zipEntry)
+                zos.write(entry.data)
                 zos.closeEntry()
             }
         }
@@ -112,6 +139,11 @@ object ApkBuilder {
         } catch (e: Exception) {
             throw IllegalStateException("APK signing failed: ${e.message}", e)
         }
+
+        if (!signed.exists() || signed.length() < 1000) {
+            throw IllegalStateException("Signed APK invalid or too small")
+        }
+
         workDir.deleteRecursively()
         return signed
     }
@@ -121,7 +153,6 @@ object ApkBuilder {
         return if (t.startsWith("http://") || t.startsWith("https://")) t else "https://$t"
     }
 
-    /** Pad/truncate to exactly the placeholder length (ASCII only for binary safety). */
     private fun padLabel(name: String): String {
         val len = LABEL_PLACEHOLDER.length
         val ascii = buildString {
@@ -170,6 +201,7 @@ object ApkBuilder {
             .setV1SigningEnabled(true)
             .setV2SigningEnabled(true)
             .setV3SigningEnabled(true)
+            .setMinSdkVersion(26)
             .build()
         signer.sign()
     }
