@@ -14,14 +14,17 @@ import java.util.zip.ZipOutputStream
 
 /**
  * Builds a signed mini-APK from the embedded template.
- * Critical for install success:
- *  - strip original META-INF (old signatures)
- *  - keep resources.arsc uncompressed (STORED)
- *  - re-sign with our keystore
+ *
+ * Package rename must cover BOTH:
+ *  - dotted form  com.babakriazi.bsc.t00  (manifest / resources)
+ *  - slashed form com/babakriazi/bsc/t00  (DEX class paths)
+ *
+ * Icons: remove adaptive XML so PNG mipmaps are actually used.
  */
 object ApkBuilder {
 
     private const val BASE_PKG = "com.babakriazi.bsc.t00"
+    private const val BASE_PKG_SLASH = "com/babakriazi/bsc/t00"
     private const val LABEL_PLACEHOLDER = "__BOBBIT_LABEL_PAD_32CHARS__"
 
     fun build(
@@ -33,8 +36,9 @@ object ApkBuilder {
     ): File {
         val slotStr = slot.toString().padStart(2, '0')
         val newPkg = "com.babakriazi.bsc.t$slotStr"
-        if (newPkg.length != BASE_PKG.length) {
-            throw IllegalStateException("Package length mismatch: $newPkg vs $BASE_PKG")
+        val newPkgSlash = "com/babakriazi/bsc/t$slotStr"
+        if (newPkg.length != BASE_PKG.length || newPkgSlash.length != BASE_PKG_SLASH.length) {
+            throw IllegalStateException("Package length mismatch: $newPkg")
         }
 
         val workDir = File(context.cacheDir, "apk_work_$slotStr").also {
@@ -53,7 +57,6 @@ object ApkBuilder {
             throw IllegalStateException("template.apk missing in assets", e)
         }
 
-        // name -> (bytes, method) method: ZipEntry.STORED or DEFLATED
         data class Entry(val data: ByteArray, val method: Int)
 
         val entries = linkedMapOf<String, Entry>()
@@ -61,9 +64,13 @@ object ApkBuilder {
             var e = zis.nextEntry
             while (e != null) {
                 val name = e.name
-                if (!e.isDirectory && !name.uppercase().startsWith("META-INF/")) {
+                // Skip signatures AND adaptive icons (they override PNG on API 26+)
+                val skip = e.isDirectory ||
+                    name.uppercase().startsWith("META-INF/") ||
+                    name.contains("mipmap-anydpi") ||
+                    name.endsWith("ic_launcher.xml") && name.contains("mipmap")
+                if (!skip) {
                     val data = zis.readBytes()
-                    // Preserve STORED for arsc and similar; default DEFLATED otherwise
                     val method = when {
                         name == "resources.arsc" -> ZipEntry.STORED
                         name.endsWith(".png") || name.endsWith(".webp") -> ZipEntry.STORED
@@ -77,42 +84,44 @@ object ApkBuilder {
             }
         }
 
-        // URL asset
         entries["assets/url.txt"] = Entry(
             (normalizeUrl(url) + "\n").toByteArray(Charsets.UTF_8),
             ZipEntry.DEFLATED
         )
 
-        val pkgFrom = BASE_PKG.toByteArray(Charsets.UTF_8)
-        val pkgTo = newPkg.toByteArray(Charsets.UTF_8)
-        val labelFrom = LABEL_PLACEHOLDER.toByteArray(Charsets.UTF_8)
-        val labelTo = padLabel(label).toByteArray(Charsets.UTF_8)
-        if (labelFrom.size != labelTo.size) {
-            throw IllegalStateException(
-                "Label length mismatch: placeholder=${labelFrom.size} padded=${labelTo.size}"
-            )
+        val replacements = listOf(
+            BASE_PKG.toByteArray(Charsets.UTF_8) to newPkg.toByteArray(Charsets.UTF_8),
+            BASE_PKG_SLASH.toByteArray(Charsets.UTF_8) to newPkgSlash.toByteArray(Charsets.UTF_8),
+            LABEL_PLACEHOLDER.toByteArray(Charsets.UTF_8) to padLabel(label).toByteArray(Charsets.UTF_8)
+        )
+        for ((from, to) in replacements) {
+            if (from.size != to.size) {
+                throw IllegalStateException("Replace length mismatch ${from.size} vs ${to.size}")
+            }
         }
 
         for ((name, entry) in entries.toList()) {
             var bytes = entry.data
-            bytes = replaceBytes(bytes, pkgFrom, pkgTo)
-            bytes = replaceBytes(bytes, labelFrom, labelTo)
+            for ((from, to) in replacements) {
+                bytes = replaceBytes(bytes, from, to)
+            }
             entries[name] = Entry(bytes, entry.method)
         }
 
-        // Inject favicon as mipmap PNGs (STORED)
+        // Always inject PNG icons for all densities (custom or favicon)
         if (iconPng != null && iconPng.exists()) {
             val png = iconPng.readBytes()
-            val iconKeys = entries.keys.filter {
-                it.endsWith("ic_launcher.png") || it.endsWith("ic_launcher.webp")
+            // Remove any leftover adaptive/xml launcher icons
+            entries.keys.filter {
+                it.contains("ic_launcher") && (it.endsWith(".xml") || it.contains("anydpi"))
+            }.toList().forEach { entries.remove(it) }
+
+            listOf("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi").forEach { dens ->
+                entries["res/mipmap-$dens/ic_launcher.png"] = Entry(png, ZipEntry.STORED)
+                entries["res/mipmap-$dens/ic_launcher_round.png"] = Entry(png, ZipEntry.STORED)
             }
-            if (iconKeys.isNotEmpty()) {
-                iconKeys.forEach { entries[it] = Entry(png, ZipEntry.STORED) }
-            } else {
-                listOf("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi").forEach { dens ->
-                    entries["res/mipmap-$dens/ic_launcher.png"] = Entry(png, ZipEntry.STORED)
-                }
-            }
+            // Also plain mipmap fallback
+            entries["res/mipmap/ic_launcher.png"] = Entry(png, ZipEntry.STORED)
         }
 
         ZipOutputStream(FileOutputStream(unsigned)).use { zos ->
