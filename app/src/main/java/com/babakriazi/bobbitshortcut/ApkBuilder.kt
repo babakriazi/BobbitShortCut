@@ -3,9 +3,7 @@ package com.babakriazi.bobbitshortcut
 import android.content.Context
 import com.android.apksig.ApkSigner
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.ByteArrayOutputStream
 import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
@@ -16,14 +14,15 @@ import java.util.zip.ZipOutputStream
 /**
  * Builds a signed mini-APK from the embedded template:
  * - unique package com.babakriazi.bsc.tXX
- * - label (32-char padded ASCII)
+ * - label (same byte length as placeholder)
  * - url in assets/url.txt
  * - launcher icon PNGs replaced when possible
  */
 object ApkBuilder {
 
     private const val BASE_PKG = "com.babakriazi.bsc.t00"
-    private const val LABEL_PLACEHOLDER = "__BOBBIT_LABEL_PAD_32CHARS__" // 32 chars
+    // Must match template strings.xml app_name exactly (length matters for binary replace)
+    private const val LABEL_PLACEHOLDER = "__BOBBIT_LABEL_PAD_32CHARS__"
 
     fun build(
         context: Context,
@@ -34,7 +33,9 @@ object ApkBuilder {
     ): File {
         val slotStr = slot.toString().padStart(2, '0')
         val newPkg = "com.babakriazi.bsc.t$slotStr"
-        require(newPkg.length == BASE_PKG.length)
+        if (newPkg.length != BASE_PKG.length) {
+            throw IllegalStateException("Package length mismatch: $newPkg vs $BASE_PKG")
+        }
 
         val workDir = File(context.cacheDir, "apk_work_$slotStr").also {
             it.deleteRecursively()
@@ -45,10 +46,12 @@ object ApkBuilder {
             it.parentFile?.mkdirs()
         }
 
-        // 1) Load template from assets
-        val templateBytes = context.assets.open("template.apk").use { it.readBytes() }
+        val templateBytes = try {
+            context.assets.open("template.apk").use { it.readBytes() }
+        } catch (e: Exception) {
+            throw IllegalStateException("template.apk missing in assets", e)
+        }
 
-        // 2) Unzip, modify entries, re-zip
         val entries = linkedMapOf<String, ByteArray>()
         ZipInputStream(templateBytes.inputStream()).use { zis ->
             var e = zis.nextEntry
@@ -61,15 +64,17 @@ object ApkBuilder {
             }
         }
 
-        // url.txt
         entries["assets/url.txt"] = (normalizeUrl(url) + "\n").toByteArray(Charsets.UTF_8)
 
-        // Replace package name everywhere (same length)
         val pkgFrom = BASE_PKG.toByteArray(Charsets.UTF_8)
         val pkgTo = newPkg.toByteArray(Charsets.UTF_8)
         val labelFrom = LABEL_PLACEHOLDER.toByteArray(Charsets.UTF_8)
         val labelTo = padLabel(label).toByteArray(Charsets.UTF_8)
-        require(labelFrom.size == labelTo.size)
+        if (labelFrom.size != labelTo.size) {
+            throw IllegalStateException(
+                "Label length mismatch: placeholder=${labelFrom.size} padded=${labelTo.size}"
+            )
+        }
 
         for ((name, data) in entries.toList()) {
             var bytes = data
@@ -78,37 +83,35 @@ object ApkBuilder {
             entries[name] = bytes
         }
 
-        // Replace icons if we have a PNG
         if (iconPng != null && iconPng.exists()) {
             val png = iconPng.readBytes()
             val iconKeys = entries.keys.filter {
                 it.endsWith("ic_launcher.png") || it.endsWith("ic_launcher.webp")
             }
-            // Prefer writing as PNG paths; if only adaptive XML exists, also drop a PNG into drawable
             if (iconKeys.isNotEmpty()) {
                 iconKeys.forEach { entries[it] = png }
             } else {
                 entries["res/drawable/ic_launcher_foreground.png"] = png
-                // Also try common density paths
                 listOf("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi").forEach { dens ->
                     entries["res/mipmap-$dens/ic_launcher.png"] = png
                 }
             }
         }
 
-        // Write zip (no compression for .so alignment friendliness; STORED for most)
         ZipOutputStream(FileOutputStream(unsigned)).use { zos ->
             for ((name, data) in entries) {
                 val entry = ZipEntry(name)
-                // Deflate by default
                 zos.putNextEntry(entry)
                 zos.write(data)
                 zos.closeEntry()
             }
         }
 
-        // 3) Sign
-        signApk(context, unsigned, signed)
+        try {
+            signApk(context, unsigned, signed)
+        } catch (e: Exception) {
+            throw IllegalStateException("APK signing failed: ${e.message}", e)
+        }
         workDir.deleteRecursively()
         return signed
     }
@@ -118,14 +121,15 @@ object ApkBuilder {
         return if (t.startsWith("http://") || t.startsWith("https://")) t else "https://$t"
     }
 
-    /** Pad/truncate to exactly 32 ASCII chars for binary replace. */
+    /** Pad/truncate to exactly the placeholder length (ASCII only for binary safety). */
     private fun padLabel(name: String): String {
+        val len = LABEL_PLACEHOLDER.length
         val ascii = buildString {
             for (c in name) {
                 if (c.code in 32..126) append(c) else append('?')
             }
         }.ifBlank { "Web Shortcut" }
-        return ascii.take(32).padEnd(32, ' ')
+        return ascii.take(len).padEnd(len, ' ')
     }
 
     private fun replaceBytes(source: ByteArray, from: ByteArray, to: ByteArray): ByteArray {
