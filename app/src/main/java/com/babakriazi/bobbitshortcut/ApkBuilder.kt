@@ -16,13 +16,22 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 /**
- * Pre-built per-slot templates already have real PNG mipmap icons registered in resources.arsc.
- * We only REPLACE those existing PNG file bytes so the launcher shows the custom image.
+ * Label: fixed 64-byte ASCII placeholder replaced with UTF-8 bytes (Persian supported),
+ * padded/truncated to exactly 64 bytes so resources.arsc stays valid.
  */
 object ApkBuilder {
 
-    private const val LABEL_PLACEHOLDER = "__BOBBIT_LABEL_PAD_32CHARS__"
+    // Must match template strings.xml app_name exactly (64 ASCII chars)
+    private const val LABEL_PLACEHOLDER =
+        "____BOBBIT_SHORTCUT_LABEL_PLACEHOLDER_64_BYTES_PAD____"
+
     const val MAX_SLOTS = 20
+
+    init {
+        require(LABEL_PLACEHOLDER.length == 64) {
+            "LABEL_PLACEHOLDER must be 64 chars, was ${LABEL_PLACEHOLDER.length}"
+        }
+    }
 
     fun build(
         context: Context,
@@ -79,15 +88,13 @@ object ApkBuilder {
         )
 
         val labelFrom = LABEL_PLACEHOLDER.toByteArray(Charsets.UTF_8)
-        val labelTo = padLabel(label).toByteArray(Charsets.UTF_8)
-        if (labelFrom.size != labelTo.size) {
-            throw IllegalStateException("Label length mismatch")
-        }
+        val labelTo = padLabelUtf8(label)
+        require(labelFrom.size == 64 && labelTo.size == 64)
+
         for ((name, entry) in entries.toList()) {
             entries[name] = Entry(replaceBytes(entry.data, labelFrom, labelTo), entry.method)
         }
 
-        // Replace EXISTING launcher PNG entries only (paths already in resources.arsc)
         if (iconPng != null && iconPng.exists()) {
             val src = BitmapFactory.decodeFile(iconPng.absolutePath)
                 ?: throw IllegalStateException("Cannot decode icon image")
@@ -110,19 +117,6 @@ object ApkBuilder {
                 val baos = ByteArrayOutputStream()
                 scaled.compress(Bitmap.CompressFormat.PNG, 100, baos)
                 entries[key] = Entry(baos.toByteArray(), ZipEntry.STORED)
-            }
-            // If template had no density folders matched, still try plain paths
-            if (iconKeys.isEmpty()) {
-                val baos = ByteArrayOutputStream()
-                Bitmap.createScaledBitmap(src, 192, 192, true)
-                    .compress(Bitmap.CompressFormat.PNG, 100, baos)
-                val png = baos.toByteArray()
-                densitySizes.keys.forEach { d ->
-                    val p1 = "res/mipmap-$d/ic_launcher.png"
-                    val p2 = "res/mipmap-$d/ic_launcher_round.png"
-                    if (entries.containsKey(p1)) entries[p1] = Entry(png, ZipEntry.STORED)
-                    if (entries.containsKey(p2)) entries[p2] = Entry(png, ZipEntry.STORED)
-                }
             }
         }
 
@@ -163,14 +157,23 @@ object ApkBuilder {
         return if (t.startsWith("http://") || t.startsWith("https://")) t else "https://$t"
     }
 
-    private fun padLabel(name: String): String {
-        val len = LABEL_PLACEHOLDER.length
-        val ascii = buildString {
-            for (c in name) {
-                if (c.code in 32..126) append(c) else append('?')
-            }
-        }.ifBlank { "Web Shortcut" }
-        return ascii.take(len).padEnd(len, ' ')
+    /**
+     * Encode [name] as UTF-8, truncate on character boundary to max 64 bytes,
+     * pad with spaces (0x20) to exactly 64 bytes. Supports Persian and other Unicode.
+     */
+    private fun padLabelUtf8(name: String): ByteArray {
+        val max = 64
+        val clean = name.trim().ifBlank { "Web Shortcut" }
+        var bytes = clean.toByteArray(Charsets.UTF_8)
+        if (bytes.size > max) {
+            var cut = max
+            // do not split a UTF-8 multi-byte sequence
+            while (cut > 0 && (bytes[cut].toInt() and 0xC0) == 0x80) cut--
+            bytes = bytes.copyOf(cut)
+        }
+        val out = ByteArray(max) { 0x20 }
+        System.arraycopy(bytes, 0, out, 0, bytes.size)
+        return out
     }
 
     private fun replaceBytes(source: ByteArray, from: ByteArray, to: ByteArray): ByteArray {

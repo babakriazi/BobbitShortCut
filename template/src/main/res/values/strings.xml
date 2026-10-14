@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">__BOBBIT_LABEL_PAD_32CHARS__</string>
+    <!-- Exactly 64 ASCII bytes — replaced with UTF-8 name (Persian OK) padded to 64 bytes -->
+    <string name="app_name">____BOBBIT_SHORTCUT_LABEL_PLACEHOLDER_64_BYTES_PAD____</string>
 </resources>
