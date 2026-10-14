@@ -1,7 +1,10 @@
 package com.babakriazi.bobbitshortcut
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import com.android.apksig.ApkSigner
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.security.KeyStore
@@ -13,9 +16,8 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 /**
- * Uses a pre-built per-slot template APK (unique applicationId already).
- * Only patches: url.txt, app label placeholder, launcher PNG icons.
- * Does NOT rename packages in DEX (that was breaking launch).
+ * Pre-built per-slot templates already have real PNG mipmap icons registered in resources.arsc.
+ * We only REPLACE those existing PNG file bytes so the launcher shows the custom image.
  */
 object ApkBuilder {
 
@@ -55,10 +57,7 @@ object ApkBuilder {
             var e = zis.nextEntry
             while (e != null) {
                 val name = e.name
-                val skip = e.isDirectory ||
-                    name.uppercase().startsWith("META-INF/") ||
-                    name.contains("mipmap-anydpi") ||
-                    (name.contains("ic_launcher") && name.endsWith(".xml"))
+                val skip = e.isDirectory || name.uppercase().startsWith("META-INF/")
                 if (!skip) {
                     val data = zis.readBytes()
                     val method = when {
@@ -74,13 +73,11 @@ object ApkBuilder {
             }
         }
 
-        // URL
         entries["assets/url.txt"] = Entry(
             (normalizeUrl(url) + "\n").toByteArray(Charsets.UTF_8),
             ZipEntry.DEFLATED
         )
 
-        // Label only (same length ASCII)
         val labelFrom = LABEL_PLACEHOLDER.toByteArray(Charsets.UTF_8)
         val labelTo = padLabel(label).toByteArray(Charsets.UTF_8)
         if (labelFrom.size != labelTo.size) {
@@ -90,14 +87,43 @@ object ApkBuilder {
             entries[name] = Entry(replaceBytes(entry.data, labelFrom, labelTo), entry.method)
         }
 
-        // Icons: force PNG mipmaps so launcher shows custom/favicon image
+        // Replace EXISTING launcher PNG entries only (paths already in resources.arsc)
         if (iconPng != null && iconPng.exists()) {
-            val png = iconPng.readBytes()
-            listOf("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi").forEach { dens ->
-                entries["res/mipmap-$dens/ic_launcher.png"] = Entry(png, ZipEntry.STORED)
-                entries["res/mipmap-$dens/ic_launcher_round.png"] = Entry(png, ZipEntry.STORED)
+            val src = BitmapFactory.decodeFile(iconPng.absolutePath)
+                ?: throw IllegalStateException("Cannot decode icon image")
+            val densitySizes = mapOf(
+                "mdpi" to 48,
+                "hdpi" to 72,
+                "xhdpi" to 96,
+                "xxhdpi" to 144,
+                "xxxhdpi" to 192
+            )
+            val iconKeys = entries.keys.filter { key ->
+                val n = key.substringAfterLast('/')
+                (n == "ic_launcher.png" || n == "ic_launcher_round.png") &&
+                    key.contains("mipmap")
             }
-            entries["res/mipmap/ic_launcher.png"] = Entry(png, ZipEntry.STORED)
+            for (key in iconKeys) {
+                val dens = densitySizes.keys.find { key.contains("mipmap-$it") }
+                val size = dens?.let { densitySizes[it] } ?: 192
+                val scaled = Bitmap.createScaledBitmap(src, size, size, true)
+                val baos = ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.PNG, 100, baos)
+                entries[key] = Entry(baos.toByteArray(), ZipEntry.STORED)
+            }
+            // If template had no density folders matched, still try plain paths
+            if (iconKeys.isEmpty()) {
+                val baos = ByteArrayOutputStream()
+                Bitmap.createScaledBitmap(src, 192, 192, true)
+                    .compress(Bitmap.CompressFormat.PNG, 100, baos)
+                val png = baos.toByteArray()
+                densitySizes.keys.forEach { d ->
+                    val p1 = "res/mipmap-$d/ic_launcher.png"
+                    val p2 = "res/mipmap-$d/ic_launcher_round.png"
+                    if (entries.containsKey(p1)) entries[p1] = Entry(png, ZipEntry.STORED)
+                    if (entries.containsKey(p2)) entries[p2] = Entry(png, ZipEntry.STORED)
+                }
+            }
         }
 
         ZipOutputStream(FileOutputStream(unsigned)).use { zos ->
