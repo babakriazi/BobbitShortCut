@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fixed-length placeholder (32 chars) replaced when building each shortcut APK -->
+    <string name="app_name">__BOBBIT_LABEL_PAD_32CHARS__</string>
+</resources>
