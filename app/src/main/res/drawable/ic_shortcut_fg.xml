@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Windows-style shortcut: document + curved arrow -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- page -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,28h28l12,12v40c0,2.2 -1.8,4 -4,4H34c-2.2,0 -4,-1.8 -4,-4V32c0,-2.2 1.8,-4 4,-4z" />
+    <path
+        android:fillColor="#BBDEFB"
+        android:pathData="M62,28v12h12z" />
+    <!-- lines on page -->
+    <path
+        android:strokeColor="#90CAF9"
+        android:strokeWidth="2.5"
+        android:pathData="M40,52h28M40,60h28M40,68h18" />
+    <!-- curved shortcut arrow (bottom-left) -->
+    <path
+        android:fillColor="#0D47A1"
+        android:pathData="M28,78c0,-10 8,-18 18,-18h6v-6l10,10 -10,10v-6h-6c-5.5,0 -10,4.5 -10,10v4h-8v-4z" />
+</vector>
