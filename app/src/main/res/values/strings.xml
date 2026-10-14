@@ -5,8 +5,6 @@
     <string name="site_url">Website URL</string>
     <string name="create_shortcut">Create shortcut</string>
     <string name="my_shortcuts">My shortcuts</string>
-    <string name="hint_name">e.g. Google</string>
-    <string name="hint_url">e.g. https://google.com</string>
     <string name="empty">No shortcuts yet.\nEnter a name and URL above.</string>
     <string name="creating">Creating shortcut…</string>
     <string name="install_prompt">Install the shortcut app to show it in your app list.</string>
@@ -15,4 +13,8 @@
     <string name="delete">Delete</string>
     <string name="open">Open</string>
     <string name="reinstall">Reinstall</string>
+    <string name="choose_icon">Icon (optional)</string>
+    <string name="clear_icon">Clear</string>
+    <string name="icon_selected">Custom icon selected</string>
+    <string name="icon_error">Could not read this image</string>
 </resources>

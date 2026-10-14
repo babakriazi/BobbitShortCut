@@ -1,6 +1,8 @@
 package com.babakriazi.bobbitshortcut
 
-import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +14,7 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
@@ -24,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 
 class MainActivity : AppCompatActivity() {
 
@@ -32,6 +36,34 @@ class MainActivity : AppCompatActivity() {
     private lateinit var recycler: RecyclerView
     private lateinit var empty: TextView
     private lateinit var progress: View
+    private lateinit var imgCustomIcon: ImageView
+    private lateinit var btnClearIcon: MaterialButton
+
+    /** Optional user-picked icon (PNG on disk), null = fetch from website */
+    private var customIconFile: File? = null
+
+    private val pickIcon = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        try {
+            val bmp = decodeBitmap(uri) ?: run {
+                Toast.makeText(this, R.string.icon_error, Toast.LENGTH_SHORT).show()
+                return@registerForActivityResult
+            }
+            val sized = Bitmap.createScaledBitmap(bmp, 192, 192, true)
+            val out = File(cacheDir, "custom_icon_pick.png")
+            FileOutputStream(out).use {
+                sized.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+            customIconFile = out
+            imgCustomIcon.setImageBitmap(sized)
+            btnClearIcon.visibility = View.VISIBLE
+            Toast.makeText(this, R.string.icon_selected, Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, getString(R.string.icon_error) + ": ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +73,8 @@ class MainActivity : AppCompatActivity() {
         recycler = findViewById(R.id.recycler)
         empty = findViewById(R.id.txtEmpty)
         progress = findViewById(R.id.progressOverlay)
+        imgCustomIcon = findViewById(R.id.imgCustomIcon)
+        btnClearIcon = findViewById(R.id.btnClearIcon)
 
         adapter = ShortcutAdapter(
             onOpen = { openUrl(it.url) },
@@ -51,7 +85,44 @@ class MainActivity : AppCompatActivity() {
         recycler.adapter = adapter
 
         findViewById<MaterialButton>(R.id.btnCreate).setOnClickListener { createShortcut() }
+        findViewById<MaterialButton>(R.id.btnPickIcon).setOnClickListener {
+            // image/* covers png/jpg; also try */* for ico on some devices
+            pickIcon.launch("image/*")
+        }
+        btnClearIcon.setOnClickListener { clearCustomIcon() }
+
         refreshList()
+    }
+
+    private fun clearCustomIcon() {
+        customIconFile = null
+        imgCustomIcon.setImageResource(R.drawable.ic_default_site)
+        btnClearIcon.visibility = View.GONE
+    }
+
+    private fun decodeBitmap(uri: Uri): Bitmap? {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val source = ImageDecoder.createSource(contentResolver, uri)
+                ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                    decoder.isMutableRequired = false
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                }
+            } else {
+                contentResolver.openInputStream(uri)?.use {
+                    BitmapFactory.decodeStream(it)
+                }
+            }
+        } catch (_: Exception) {
+            // Fallback for some .ico files
+            try {
+                contentResolver.openInputStream(uri)?.use {
+                    BitmapFactory.decodeStream(it)
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 
     private fun createShortcut() {
@@ -73,7 +144,7 @@ class MainActivity : AppCompatActivity() {
                 .setMessage("Allow installing apps from Bobbit ShortCut so shortcuts can appear in your app list.")
                 .setPositiveButton("Settings") { _, _ ->
                     startActivity(
-                        Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        android.content.Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
                             data = Uri.parse("package:$packageName")
                         }
                     )
@@ -84,12 +155,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         progress.visibility = View.VISIBLE
+        val userIcon = customIconFile
         lifecycleScope.launch {
             try {
                 val slot = store.nextFreeSlot()
                 val pkg = ShortcutStore.packageForSlot(slot)
                 val iconFile = File(cacheDir, "icon_$slot.png")
-                FaviconFetcher.fetchAndSave(this@MainActivity, url, iconFile)
+
+                if (userIcon != null && userIcon.exists()) {
+                    userIcon.copyTo(iconFile, overwrite = true)
+                } else {
+                    FaviconFetcher.fetchAndSave(this@MainActivity, url, iconFile)
+                }
 
                 val apk = withContext(Dispatchers.IO) {
                     ApkBuilder.build(this@MainActivity, slot, name, url, iconFile)
@@ -110,6 +187,7 @@ class MainActivity : AppCompatActivity() {
 
                 findViewById<TextInputEditText>(R.id.edtName).text?.clear()
                 findViewById<TextInputEditText>(R.id.edtUrl).text?.clear()
+                clearCustomIcon()
 
                 installApk(apk)
             } catch (e: Exception) {
@@ -153,10 +231,10 @@ class MainActivity : AppCompatActivity() {
             "$packageName.fileprovider",
             apk
         )
-        val intent = Intent(Intent.ACTION_VIEW).apply {
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         Toast.makeText(this, R.string.install_prompt, Toast.LENGTH_LONG).show()
         startActivity(intent)
@@ -176,7 +254,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openUrl(url: String) {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(normalizeUrl(url))))
+            startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(normalizeUrl(url))))
         } catch (e: Exception) {
             Toast.makeText(this, e.message, Toast.LENGTH_SHORT).show()
         }
